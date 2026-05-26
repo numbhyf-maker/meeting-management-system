@@ -962,30 +962,32 @@ async function renderDashboard() {
   html += '<div style="font-size:11px;color:var(--text-light);margin-top:6px" id="rankPeriodLabel">当前：全部数据</div>';
   html += '</div>';
 
-  // --- Indicator Cards (8 cards) ---
-  html += buildMetricCard('总会议数', total + ' 次', '共涉及 ' + new Set(records.map(r => r.dept)).size + ' 个部门', 'info', false);
-  html += buildMetricCard('平均效率分', avgEfficiency.toFixed(1) + ' 分', '满分100分 | 合规优秀率 ' + complianceExcellentRate.toFixed(1) + '%', getLevel(avgEfficiency, [80, 60]), false);
-  html += buildMetricCard('超时率', overtimeRate.toFixed(1) + '%', overtimeCount + '/' + total + ' 场超时 | 浪费 ' + wasteMinutes + ' 分钟', getLevel(100 - overtimeRate, [70, 50]), true);
-  html += buildMetricCard('平均合规分', avgCompliance.toFixed(1) + ' 分', '资料准备率 ' + materialRate.toFixed(1) + '% | 纪要及时率 ' + minutesRate.toFixed(1) + '%', getLevel(avgCompliance, [80, 60]), false);
+  // --- Section 2: 部门聚焦 ---
+  const deptList = [...new Set(records.map(r => r.dept).filter(Boolean))].sort();
+  window._deptData = { records, deptList };
+  html += '<div class="card" style="margin-bottom:20px">';
+  html += '<div class="card-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">';
+  html += '<span>部门聚焦</span>';
+  html += '<div style="display:flex;align-items:center;gap:8px">';
+  html += '<span style="font-size:12px;color:var(--text-light)">选择部门查看专属指标：</span>';
+  html += '<select id="focusDept" onchange="switchFocusDept()" style="padding:6px 12px;border:0.5px solid var(--border);border-radius:6px;font-size:13px;min-width:180px;background:var(--card);cursor:pointer">';
+  html += '<option value="__all__">全部部门（公司总览）</option>';
+  deptList.forEach(d => html += '<option value="' + esc(d) + '">' + esc(d) + '</option>');
+  html += '</select>';
+  html += '</div></div>';
+  html += '<div id="deptFocusCards"></div>';
   html += '</div>';
 
-  // --- More detail cards ---
-  html += '<div class="dashboard-grid">';
-  html += buildMetricCard('平均出席率', avgAttendRate.toFixed(1) + '%', '参会总人次 ' + totalAttendees + ' | 缺席总人次 ' + totalAbsent, getLevel(avgAttendRate, [90, 75]), false);
-  html += buildMetricCard('按时结束率', endOnTimeRate.toFixed(1) + '%', endOnTimeCount + '/' + total + ' 场按时结束', getLevel(endOnTimeRate, [80, 60]), false);
-  html += buildMetricCard('平均迟到率', avgLateRate.toFixed(1) + '%', '迟到总人次 ' + totalLate, getLevel(100 - avgLateRate, [90, 75]), true);
-  html += buildMetricCard('平均计划时长', avgPlanned.toFixed(0) + ' / ' + avgActual.toFixed(0) + ' 分钟', '计划vs实际 | 会议数 ' + total, 'info', false);
-  html += '</div>';
-
-  // --- Charts Row 1: 部门效率排名 + 合规分分布 ---
+  // --- Section 3: 部门趋势 + 全部门效率对比 ---
   html += '<div class="chart-row">';
-  html += '<div class="chart-container"><div class="card-title">部门效率排名</div><canvas id="chartDeptEfficiency"></canvas></div>';
+  html += '<div class="chart-container"><div class="card-title" id="deptTrendTitle">部门趋势</div><canvas id="chartDeptTrend"></canvas></div>';
+  html += '<div class="chart-container"><div class="card-title">部门效率对比</div><canvas id="chartDeptEfficiency"></canvas></div>';
+  html += '</div>';
+
+  // --- Section 4: 月度趋势 + 合规分分布 ---
+  html += '<div class="chart-row">';
+  html += '<div class="chart-container"><div class="card-title">全公司月度趋势</div><canvas id="chartMonthlyTrend" style="max-height:300px"></canvas></div>';
   html += '<div class="chart-container"><div class="card-title">合规分分布</div><canvas id="chartComplianceDist"></canvas></div>';
-  html += '</div>';
-
-  // --- Charts Row 2: 月度趋势 ---
-  html += '<div class="chart-row">';
-  html += '<div class="chart-container" style="grid-column:1/-1"><div class="card-title">月度趋势</div><canvas id="chartMonthlyTrend" style="max-height:300px"></canvas></div>';
   html += '</div>';
 
   // --- Data Table with Filters ---
@@ -1007,10 +1009,12 @@ async function renderDashboard() {
 
   container.innerHTML = html;
 
-  // Render charts and ranking
+  // Render all sections
   currentRankPeriod = 'all';
   window._allRecords = records;
   await renderRankTable(records, 'all');
+  renderDeptFocusCards(records, '__all__');
+  await renderDeptTrendChart(records, '__all__');
   await renderDeptEfficiencyChart(records);
   await renderComplianceDistChart(records);
   await renderMonthlyTrendChart(records);
@@ -1218,6 +1222,169 @@ async function renderRankTable(records, period) {
   });
   html += '</tbody></table>';
   container.innerHTML = html;
+}
+
+// ============================================================
+// DEPARTMENT FOCUS MODE
+// ============================================================
+let currentFocusDept = '__all__';
+
+function switchFocusDept() {
+  const sel = document.getElementById('focusDept');
+  if (!sel) return;
+  currentFocusDept = sel.value;
+  const data = window._deptData;
+  if (!data) return;
+
+  renderDeptFocusCards(data.records, currentFocusDept);
+  renderDeptTrendChart(data.records, currentFocusDept);
+
+  // Sync data table filter
+  const filterDept = document.getElementById('filterDept');
+  if (filterDept) {
+    filterDept.value = currentFocusDept === '__all__' ? '' : currentFocusDept;
+  }
+  renderDataTable();
+}
+
+function renderDeptFocusCards(records, deptName) {
+  const container = document.getElementById('deptFocusCards');
+  if (!container) return;
+
+  const filtered = deptName === '__all__' ? records : records.filter(r => r.dept === deptName);
+
+  if (filtered.length === 0) {
+    container.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-light);border:1px dashed var(--border);border-radius:8px">该部门暂无数据</div>';
+    return;
+  }
+
+  const total = filtered.length;
+  const avgEff = filtered.reduce((s, r) => s + (r.efficiencyScore || 0), 0) / total;
+  const avgComp = filtered.reduce((s, r) => s + (r.complianceScore || 0), 0) / total;
+  const overtimeCount = filtered.filter(r => r.isOvertime).length;
+  const overtimeRate = total > 0 ? (overtimeCount / total * 100) : 0;
+  const composite = avgEff * 0.6 + avgComp * 0.4;
+  const endOnTimeCount = filtered.filter(r => r.endOnTime === '是').length;
+  const endOnTimeRate = total > 0 ? (endOnTimeCount / total * 100) : 0;
+  const avgAttendRate = total > 0 ? (filtered.reduce((s, r) => s + (r.attendRate || 0), 0) / total) : 0;
+  const avgLateRate = total > 0 ? (filtered.reduce((s, r) => s + (r.lateRate || 0), 0) / total) : 0;
+
+  function getLevel(val, thresholds) {
+    if (val >= thresholds[0]) return 'good';
+    if (val >= thresholds[1]) return 'warn';
+    return 'bad';
+  }
+
+  const prefix = deptName === '__all__' ? '全公司' : deptName;
+  let html = '<div class="dashboard-grid">';
+  html += buildMetricCard('综合得分', composite.toFixed(1) + ' 分', prefix + '综合评分（效率60%+合规40%）', getLevel(composite, [85, 70]), false);
+  html += buildMetricCard('平均效率分', avgEff.toFixed(1) + ' 分', prefix + ' | 会议数 ' + total + ' 场', getLevel(avgEff, [80, 60]), false);
+  html += buildMetricCard('超时率', overtimeRate.toFixed(1) + '%', overtimeCount + '/' + total + ' 场超时', getLevel(100 - overtimeRate, [70, 50]), true);
+  html += buildMetricCard('平均合规分', avgComp.toFixed(1) + ' 分', '资料/纪要及时 | 流程规范性', getLevel(avgComp, [80, 60]), false);
+  html += buildMetricCard('按时结束率', endOnTimeRate.toFixed(1) + '%', endOnTimeCount + '/' + total + ' 场按时结束', getLevel(endOnTimeRate, [80, 60]), false);
+  html += buildMetricCard('平均出席率', avgAttendRate.toFixed(1) + '%', '迟到率 ' + avgLateRate.toFixed(1) + '%', getLevel(avgAttendRate, [90, 75]), false);
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+async function renderDeptTrendChart(records, deptName) {
+  const ctx = document.getElementById('chartDeptTrend');
+  if (!ctx) return;
+  if (chartInstances.deptTrend) { try { chartInstances.deptTrend.destroy(); } catch(e) {} }
+
+  const filtered = deptName === '__all__' ? records : records.filter(r => r.dept === deptName);
+
+  const monthMap = {};
+  filtered.forEach(r => {
+    if (!r.date) return;
+    const month = r.date.substring(0, 7);
+    if (!monthMap[month]) monthMap[month] = { total: 0, sumEff: 0, sumComp: 0 };
+    monthMap[month].total++;
+    monthMap[month].sumEff += (r.efficiencyScore || 0);
+    monthMap[month].sumComp += (r.complianceScore || 0);
+  });
+
+  const months = Object.keys(monthMap).sort();
+  const efficiencies = months.map(m => monthMap[m].total > 0 ? (monthMap[m].sumEff / monthMap[m].total) : null);
+  const compliances = months.map(m => monthMap[m].total > 0 ? (monthMap[m].sumComp / monthMap[m].total) : null);
+  const counts = months.map(m => monthMap[m].total);
+
+  const title = deptName === '__all__' ? '全公司' : deptName;
+  const titleEl = document.getElementById('deptTrendTitle');
+  if (titleEl) titleEl.textContent = title + ' 月度趋势';
+
+  chartInstances.deptTrend = new Chart(ctx.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: months,
+      datasets: [
+        {
+          label: '会议场次',
+          data: counts,
+          backgroundColor: 'rgba(46,117,182,0.15)',
+          borderColor: '#2E75B6',
+          borderWidth: 1,
+          borderRadius: 4,
+          yAxisID: 'y1',
+          order: 2
+        },
+        {
+          label: '平均效率分',
+          data: efficiencies,
+          type: 'line',
+          borderColor: '#70AD47',
+          backgroundColor: 'rgba(112,173,71,0.05)',
+          fill: false,
+          tension: 0.3,
+          pointRadius: 4,
+          pointBackgroundColor: '#70AD47',
+          yAxisID: 'y',
+          order: 1
+        },
+        {
+          label: '平均合规分',
+          data: compliances,
+          type: 'line',
+          borderColor: '#ED7D31',
+          backgroundColor: 'rgba(237,125,49,0.05)',
+          fill: false,
+          tension: 0.3,
+          pointRadius: 4,
+          pointBackgroundColor: '#ED7D31',
+          borderDash: [5, 5],
+          yAxisID: 'y',
+          order: 1
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { font: { size: 11, family: "'Microsoft YaHei'" }, usePointStyle: true, padding: 8 } }
+      },
+      scales: {
+        y: {
+          type: 'linear',
+          position: 'left',
+          beginAtZero: false,
+          min: 0,
+          max: 100,
+          ticks: { callback: v => v + '分' },
+          title: { display: true, text: '评分', font: { size: 11 } }
+        },
+        y1: {
+          type: 'linear',
+          position: 'right',
+          beginAtZero: true,
+          ticks: { stepSize: 1 },
+          title: { display: true, text: '场次', font: { size: 11 } },
+          grid: { drawOnChartArea: false }
+        }
+      }
+    }
+  });
 }
 
 // ============================================================
